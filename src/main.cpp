@@ -44,6 +44,7 @@ nvs_handle handle;
 
 WiFiServer server;
 bool isPixelflutMode = 0;
+static int n_pixelflut_workers = 0;
 
 void setup() {
 	Serial.begin(115200);
@@ -113,9 +114,15 @@ void loop() {
 		}
 	}
 
-	if (server.hasClient()) {
-		WiFiClient client = server.accept();
-		handleClientLoop(&client);
+	if (server.hasClient() && n_pixelflut_workers < PIXELFLUT_MAX_WORKERS) {
+		// Accept client.
+		WiFiClient *client = new WiFiClient(server.accept());
+		// Start task.
+		// handleClientLoop(client);
+		TaskHandle_t handle;
+		printf("Starting worker: %p, %p\r\n", client, &handle);
+		xTaskCreate((TaskFunction_t) handleClientTask, "pixelflut_worker",
+					4096, client, tskIDLE_PRIORITY, &handle);
 	}
 
 	now = millis();
@@ -242,19 +249,43 @@ void initNvs() {
 	n_money_dropped = n_money;
 }
 
+// Handles all requests of a single client in asynchronous task form.
+// Args: Two pointers: Task handle, Client handle.
+void handleClientTask(void *args) {
+	n_pixelflut_workers ++;
+	WiFiClient  *client = (WiFiClient *) args;
+	// Clean up the args we don't need anymore.
+	free(args);
+	// Run the wrapped function.
+	int id = rand();
+	printf("PixelFlut worker %04x started. %p\r\n", id, client);
+	handleClientLoop(client);
+	printf("PixelFlut worker %04x stopped.\r\n", id);
+	n_pixelflut_workers --;
+	// Delete this task.
+	vTaskDelete(NULL);
+}
+
 // Handles all requests of a single client.
 void handleClientLoop(WiFiClient *client) {
-	lastPixelflutTime = millis();
+	unsigned long now = millis();
+	unsigned long timeout = now + PIXELFLUT_TIMEOUT;
+	lastPixelflutTime = now;
 	client->setTimeout(2);
-	while (client->connected() || client->available()) {
-		handleClient(client);
+	while (millis() < timeout && client->connected() || client->available()) {
+		handleClient(client, timeout);
+		lastPixelflutTime = millis();
+		// Give up some CPU time.
+		taskYIELD();
 	}
 	lastPixelflutTime = millis();
+	client->flush();
+	client->stop();
 	//puts("done");
 }
 
 // Handles a single client synchronously.
-void handleClient(WiFiClient *client) {
+void handleClient(WiFiClient *client, unsigned long timeoutTime) {
 	unsigned long start = millis();
 	String raw = "";
 	while (1) {
@@ -270,7 +301,11 @@ void handleClient(WiFiClient *client) {
 				// Append.
 				raw += c;
 			}
+		} else {
+			// Give up some CPU time.
+			taskYIELD();
 		}
+		if (now > timeoutTime) return;
 	}
 	// Strip '\r' if any.
 	if (raw.endsWith("\r")) raw = raw.substring(0, raw.length() - 1);

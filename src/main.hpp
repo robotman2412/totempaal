@@ -67,6 +67,10 @@ struct rain {
 #define PIXELFLUT_PORT 1234
 // After 5 minutes, revert to normal.
 #define PIXELFLUT_TIME 300000
+// Timeout after which the pixelflut connection is broken.
+#define PIXELFLUT_TIMEOUT 1500
+// Maximum number of pixelflut workers.
+#define PIXELFLUT_MAX_WORKERS 10
 
 extern CRGB leds   [N_LEDS];
 extern CRGB led_alt[N_LEDS];
@@ -79,10 +83,13 @@ CRGB fade(int factor, CRGB from, CRGB to);
 
 // Initialise NVS flash and such.
 void initNvs();
+// Handles all requests of a single client in asynchronous task form.
+// Args: Two pointers: Task handle, Client handle.
+void handleClientTask(void *args);
 // Handles all requests of a single client.
 void handleClientLoop(WiFiClient *client);
 // Handles a single client synchronously.
-void handleClient(WiFiClient *client);
+void handleClient(WiFiClient *client, unsigned long timeoutTime);
 
 // Button interrupt handler.
 void buttonHandler();
