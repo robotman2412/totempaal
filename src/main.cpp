@@ -11,6 +11,8 @@
 
 #define BUTTON_THRESH 200
 
+uint8_t packet_buffer[2048] = {0};
+
 // Pattern variables.
 CRGB leds   [N_LEDS];
 CRGB led_alt[N_LEDS];
@@ -42,6 +44,7 @@ int n_money_dropped = 0;
 
 nvs_handle handle;
 
+WiFiUDP Udp;
 WiFiServer server;
 bool isPixelflutMode = 0;
 static int n_pixelflut_workers = 0;
@@ -69,6 +72,9 @@ void setup() {
 	WiFi.begin(WIFI_SSID);
 	server.setNoDelay(1);
 	server.begin(1234);
+
+    Udp.begin(localPort);
+
 	// Interrupt handlers.
 	attachInterrupt(digitalPinToInterrupt(COIN_PIN),   coinHandler,   FALLING);
 	//attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonHandler, CHANGE);
@@ -123,6 +129,12 @@ void loop() {
 		printf("Starting worker: %p, %p\r\n", client, &handle);
 		xTaskCreate((TaskFunction_t) handleClientTask, "pixelflut_worker",
 					4096, client, tskIDLE_PRIORITY, &handle);
+	}
+
+	if (udp.parsePacket()) {
+        int len = Udp.read(packetBuffer, 2047);
+        packet_buffer[len] = 0;
+        handle_input((const char*) packet_buffer);
 	}
 
 	now = millis();
@@ -284,6 +296,75 @@ void handleClientLoop(WiFiClient *client) {
 	//puts("done");
 }
 
+void handle_input(const char *str) {
+    const char *ptr = str;
+    //puts(str);
+    int split = strchr(str, ' ') - str;
+    if (split < 0) {
+        split = strlen(str);
+    }
+    if (!strncasecmp(str, "help", min(4, split))) {
+        // Show help.
+        client->write("HELP\r\n");
+        //printf("help\r\n");
+    } else if (!strncasecmp(str, "size", min(4, split))) {
+        // Return size.
+        char buf[64];
+        sprintf(buf, "SIZE %d 1\r\n", N_LEDS);
+        client->write(buf);
+        //printf("size\r\n");
+    } else if (!strncasecmp(str, "px", min(2, split))) {
+        if (*(str + split) == 0) return;//{printf("px abort 0\r\n"); return;}
+        // Pixel action.
+        ptr = str + split + 1;
+        int split = strchr(ptr, ' ') - ptr;
+        //puts(ptr);
+        if (split <= 0) return;//{printf("px abort 1\r\n"); return;}
+        // Get X.
+        char *tmp = strndup(ptr, split);
+        int x = atoi(tmp);
+        free(tmp);
+        // Split more.
+        ptr = ptr + split + 1;
+        //puts(ptr);
+        split = strchr(ptr, ' ') - ptr;
+        bool do_read = false;
+        if (split <= 0) {
+            do_read = true;
+            split = strlen(ptr);
+        }
+        // Get Y.
+        tmp = strndup(ptr, split);
+        int y = atoi(tmp);
+        free(tmp);
+        // Split more.
+        ptr = ptr + split + 1;
+        //puts(ptr);
+        if (do_read) {
+            // We are reading.
+            char buf[64];
+            int col = 0;
+            if (x < N_LEDS && x >= 0 && y == 0) {
+                CRGB led = leds[x];
+                col = (led.r << 16) | (led.g << 8) | led.b;
+            }
+            sprintf(buf, "PX %d %d %06x\r\n", x, y, col);
+            client->write(buf);
+            //printf("read\r\n");
+        } else {
+            // We are writing.
+            int col = strtol(ptr, NULL, 16);
+            if (x < N_LEDS && x >= 0 && y == 0) {
+                leds[x] = CRGB(col);
+            }
+            isPixelflutMode = 1;
+            //printf("write\r\n");
+        }
+    } else {
+        //printf("dunno\r\n");
+    }
+}
+
 // Handles a single client synchronously.
 void handleClient(WiFiClient *client, unsigned long timeoutTime) {
 	unsigned long start = millis();
@@ -310,72 +391,7 @@ void handleClient(WiFiClient *client, unsigned long timeoutTime) {
 	// Strip '\r' if any.
 	if (raw.endsWith("\r")) raw = raw.substring(0, raw.length() - 1);
 	const char *str = raw.c_str();
-	const char *ptr = str;
-	//puts(str);
-	int split = strchr(str, ' ') - str;
-	if (split < 0) {
-		split = strlen(str);
-	}
-	if (!strncasecmp(str, "help", min(4, split))) {
-		// Show help.
-		client->write("HELP\r\n");
-		//printf("help\r\n");
-	} else if (!strncasecmp(str, "size", min(4, split))) {
-		// Return size.
-		char buf[64];
-		sprintf(buf, "SIZE %d 1\r\n", N_LEDS);
-		client->write(buf);
-		//printf("size\r\n");
-	} else if (!strncasecmp(str, "px", min(2, split))) {
-		if (*(str + split) == 0) return;//{printf("px abort 0\r\n"); return;}
-		// Pixel action.
-		ptr = str + split + 1;
-		int split = strchr(ptr, ' ') - ptr;
-		//puts(ptr);
-		if (split <= 0) return;//{printf("px abort 1\r\n"); return;}
-		// Get X.
-		char *tmp = strndup(ptr, split);
-		int x = atoi(tmp);
-		free(tmp);
-		// Split more.
-		ptr = ptr + split + 1;
-		//puts(ptr);
-		split = strchr(ptr, ' ') - ptr;
-		bool do_read = false;
-		if (split <= 0) {
-			do_read = true;
-			split = strlen(ptr);
-		}
-		// Get Y.
-		tmp = strndup(ptr, split);
-		int y = atoi(tmp);
-		free(tmp);
-		// Split more.
-		ptr = ptr + split + 1;
-		//puts(ptr);
-		if (do_read) {
-			// We are reading.
-			char buf[64];
-			int col = 0;
-			if (x < N_LEDS && x >= 0 && y == 0) {
-				CRGB led = leds[x];
-				col = (led.r << 16) | (led.g << 8) | led.b;
-			}
-			sprintf(buf, "PX %d %d %06x\r\n", x, y, col);
-			client->write(buf);
-			//printf("read\r\n");
-		} else {
-			// We are writing.
-			int col = strtol(ptr, NULL, 16);
-			if (x < N_LEDS && x >= 0 && y == 0) {
-				leds[x] = CRGB(col);
-			}
-			isPixelflutMode = 1;
-			//printf("write\r\n");
-		}
-	} else {
-		//printf("dunno\r\n");
-	}
+	handle_input(str);
 }
 
 // Button interrupt handler. Currently unused.
