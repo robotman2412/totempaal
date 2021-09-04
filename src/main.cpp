@@ -116,13 +116,13 @@ void loop() {
 
 	if (server.hasClient() && n_pixelflut_workers < PIXELFLUT_MAX_WORKERS) {
 		// Accept client.
-		WiFiClient *client = new WiFiClient(server.accept());
+		//WiFiClient *client = new WiFiClient(server.accept());
 		// Start task.
-		// handleClientLoop(client);
+		//handleClientLoop(client);
 		TaskHandle_t handle;
-		printf("Starting worker: %p, %p\r\n", client, &handle);
+		//printf("Starting worker: %p, %p\r\n", client, &handle);
 		xTaskCreate((TaskFunction_t) handleClientTask, "pixelflut_worker",
-					4096, client, tskIDLE_PRIORITY, &handle);
+					4096, NULL, tskIDLE_PRIORITY, &handle);
 	}
 
 	now = millis();
@@ -252,14 +252,15 @@ void initNvs() {
 // Handles all requests of a single client in asynchronous task form.
 // Args: Two pointers: Task handle, Client handle.
 void handleClientTask(void *args) {
+	static int next_id = 0;
 	n_pixelflut_workers ++;
-	WiFiClient  *client = (WiFiClient *) args;
 	// Clean up the args we don't need anymore.
 	free(args);
 	// Run the wrapped function.
-	int id = rand();
-	printf("PixelFlut worker %04x started. %p\r\n", id, client);
-	handleClientLoop(client);
+	int id = next_id ++;
+	printf("PixelFlut worker %04x started.\r\n", id);
+	WiFiClient client = server.accept();
+	if (client) handleClientLoop(&client);
 	printf("PixelFlut worker %04x stopped.\r\n", id);
 	n_pixelflut_workers --;
 	// Delete this task.
