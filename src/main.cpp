@@ -11,6 +11,8 @@
 
 #define BUTTON_THRESH 200
 
+uint8_t packetBuffer[2048] = {0};
+
 // Pattern variables.
 CRGB leds   [N_LEDS];
 CRGB led_alt[N_LEDS];
@@ -42,6 +44,7 @@ int n_money_dropped = 0;
 
 nvs_handle handle;
 
+WiFiUDP Udp;
 WiFiServer server;
 bool isPixelflutMode = 0;
 static int n_pixelflut_workers = 0;
@@ -69,6 +72,9 @@ void setup() {
 	WiFi.begin(WIFI_SSID);
 	server.setNoDelay(1);
 	server.begin(1234);
+
+	Udp.begin(1234);
+
 	// Interrupt handlers.
 	attachInterrupt(digitalPinToInterrupt(COIN_PIN),   coinHandler,   FALLING);
 	//attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonHandler, CHANGE);
@@ -123,6 +129,12 @@ void loop() {
 		//printf("Starting worker: %p, %p\r\n", client, &handle);
 		xTaskCreate((TaskFunction_t) handleClientTask, "pixelflut_worker",
 					4096, NULL, tskIDLE_PRIORITY, &handle);
+	}
+
+	if (Udp.parsePacket()) {
+		int len = Udp.read(packetBuffer, 2047);
+		packetBuffer[len] = 0;
+		handle_input((const char*) packetBuffer, NULL);
 	}
 
 	now = millis();
@@ -285,32 +297,8 @@ void handleClientLoop(WiFiClient *client) {
 	//puts("done");
 }
 
-// Handles a single client synchronously.
-void handleClient(WiFiClient *client, unsigned long timeoutTime) {
-	unsigned long start = millis();
-	String raw = "";
-	while (1) {
-		unsigned long now = millis();
-		if (client->available()) {
-			char c = client->read();
-			if (c == '\r' || c == '\n' && raw.length() == 0) {
-				// Ignore.
-			} else if (c == '\r' || c == '\n' || now > start + 500) {
-				// End.
-				break;
-			} else {
-				// Append.
-				raw += c;
-			}
-		} else {
-			// Give up some CPU time.
-			taskYIELD();
-		}
-		if (now > timeoutTime) return;
-	}
-	// Strip '\r' if any.
-	if (raw.endsWith("\r")) raw = raw.substring(0, raw.length() - 1);
-	const char *str = raw.c_str();
+// Decodes pixelflut.
+void handle_input(const char *str, WiFiClient *client) {
 	const char *ptr = str;
 	//puts(str);
 	int split = strchr(str, ' ') - str;
@@ -319,13 +307,13 @@ void handleClient(WiFiClient *client, unsigned long timeoutTime) {
 	}
 	if (!strncasecmp(str, "help", min(4, split))) {
 		// Show help.
-		client->write("HELP\r\n");
+		if (client) client->write("HELP\r\n");
 		//printf("help\r\n");
 	} else if (!strncasecmp(str, "size", min(4, split))) {
 		// Return size.
 		char buf[64];
 		sprintf(buf, "SIZE %d 1\r\n", N_LEDS);
-		client->write(buf);
+		if (client) client->write(buf);
 		//printf("size\r\n");
 	} else if (!strncasecmp(str, "px", min(2, split))) {
 		if (*(str + split) == 0) return;//{printf("px abort 0\r\n"); return;}
@@ -362,7 +350,7 @@ void handleClient(WiFiClient *client, unsigned long timeoutTime) {
 				CRGB led = leds[x];
 				col = (led.r << 16) | (led.g << 8) | led.b;
 			}
-			sprintf(buf, "PX %d %d %06x\r\n", x, y, col);
+			if (client) sprintf(buf, "PX %d %d %06x\r\n", x, y, col);
 			client->write(buf);
 			//printf("read\r\n");
 		} else {
@@ -377,6 +365,35 @@ void handleClient(WiFiClient *client, unsigned long timeoutTime) {
 	} else {
 		//printf("dunno\r\n");
 	}
+}
+
+// Handles a single client synchronously.
+void handleClient(WiFiClient *client, unsigned long timeoutTime) {
+	unsigned long start = millis();
+	String raw = "";
+	while (1) {
+		unsigned long now = millis();
+		if (client->available()) {
+			char c = client->read();
+			if (c == '\r' || c == '\n' && raw.length() == 0) {
+				// Ignore.
+			} else if (c == '\r' || c == '\n' || now > start + 500) {
+				// End.
+				break;
+			} else {
+				// Append.
+				raw += c;
+			}
+		} else {
+			// Give up some CPU time.
+			taskYIELD();
+		}
+		if (now > timeoutTime) return;
+	}
+	// Strip '\r' if any.
+	if (raw.endsWith("\r")) raw = raw.substring(0, raw.length() - 1);
+	const char *str = raw.c_str();
+	handle_input(str, client);
 }
 
 // Button interrupt handler. Currently unused.

@@ -88,6 +88,8 @@ void initNvs();
 void handleClientTask(void *args);
 // Handles all requests of a single client.
 void handleClientLoop(WiFiClient *client);
+// Decodes pixelflut.
+void handle_input(const char *str, WiFiClient *client);
 // Handles a single client synchronously.
 void handleClient(WiFiClient *client, unsigned long timeoutTime);
 
